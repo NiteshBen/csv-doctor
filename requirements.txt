@@ -1,0 +1,1 @@
+# csv-doctor runs on the Python standard library alone — nothing to install.

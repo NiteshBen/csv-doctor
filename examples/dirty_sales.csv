@@ -1,0 +1,8 @@
+order_id,customer,zip ,amount,status
+1001,Amy Smith,02134,49.99,shipped
+
+1002,Bob Jones,94107,19.99,shipped
+1003,Carol Wu,02134,N/A,shipped
+1002,Bob Jones,94107,19.99,shipped
+1004,Dan Patel,10001,shipped
+1005, Eve Lee ,33101,5.00,shipped
