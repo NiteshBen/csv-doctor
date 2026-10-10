@@ -1,9 +1,10 @@
 """Tests for csv_doctor — each check is exercised on a small crafted file."""
 import json
+from pathlib import Path
 
 import pytest
 
-from csv_doctor import analyze, main
+from csv_doctor import analyze, fix_csv, main
 
 
 def write_csv(tmp_path, content, name="t.csv"):
@@ -102,3 +103,63 @@ def test_int_and_float_mix_is_not_a_problem(tmp_path):
     csv_text = "id,price\n1,10\n2,9.5\n3,8\n"
     findings, _ = analyze(write_csv(tmp_path, csv_text))
     assert "mixed-types" not in {f.check for f in findings}
+
+
+# --- New tests: Bug fixes & features ---
+
+def test_extra_column_ragged_row_does_not_crash(tmp_path):
+    # Has extra columns that previously caused IndexError in colname(i)
+    csv_text = "col1,col2\n1, 2 , 3 \n"
+    path = write_csv(tmp_path, csv_text)
+    findings, summary = analyze(path)
+    ragged = by_check(findings, "ragged-rows")
+    assert ragged.severity == "error"
+    assert "3 field(s), expected 2" in ragged.examples[0]
+
+
+def test_multiline_quoted_cell_preserved(tmp_path):
+    csv_text = 'id,comment\n1,"first line\nsecond line"\n2,regular\n'
+    path = write_csv(tmp_path, csv_text)
+    findings, summary = analyze(path)
+    # Should not report ragged rows or extra blank lines
+    assert summary["rows"] == 2
+    assert not [f for f in findings if f.check == "ragged-rows"]
+
+
+def test_auto_fix_mode(tmp_path):
+    dirty = write_csv(tmp_path, DIRTY)
+    fixed = tmp_path / "fixed.csv"
+    res = fix_csv(dirty, fixed)
+    assert res["removed_duplicates"] == 1
+    assert res["adjusted_ragged_rows"] == 1
+    assert fixed.exists()
+
+    # Analyzed fixed file - whitespace and duplicates should be clean!
+    findings, summary = analyze(fixed)
+    checks = {f.check for f in findings if f.severity in ("error", "warn")}
+    assert "whitespace" not in checks
+    assert "duplicates" not in checks
+    assert "blank-lines" not in checks
+    assert "ragged-rows" not in checks
+
+
+def test_cli_flags_quiet_and_error_only(tmp_path, capsys):
+    # CSV with only warnings (whitespace), no error
+    warn_only = write_csv(tmp_path, "id,name\n1, Amy \n")
+    # By default, warning returns 1
+    assert main([str(warn_only)]) == 1
+    # With --error-only, warnings are allowed (returns 0)
+    assert main([str(warn_only), "--error-only"]) == 0
+    # Clear captured buffer
+    capsys.readouterr()
+    # With --quiet, no stdout is printed
+    assert main([str(warn_only), "--quiet"]) == 1
+    assert capsys.readouterr().out == ""
+
+
+def test_explicit_delimiter_flag(tmp_path):
+    tsv = "id\tname\tscore\n1\tAmy\t10\n2\tBob\t20\n"
+    path = write_csv(tmp_path, tsv, name="data.tsv")
+    findings, summary = analyze(path, delimiter="\t")
+    assert summary["columns"] == 3
+    assert not [f for f in findings if f.severity in ("error", "warn")]

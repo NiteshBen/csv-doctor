@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import io
 import json
 import re
 import sys
@@ -64,7 +65,7 @@ def read_text(path: Path) -> tuple[str, list[Finding]]:
 
 def sniff_delimiter(text: str) -> str:
     try:
-        return csv.Sniffer().sniff(text[:65536], delimiters=",;\t|").delimiter
+        return csv.Sniffer().sniff(text[:65536], delimiters=",;\t|:").delimiter
     except csv.Error:
         return ","
 
@@ -88,19 +89,20 @@ def classify(cell: str) -> str:
         return "text"
 
 
-def analyze(path: Path, max_examples: int = 5) -> tuple[list[Finding], dict]:
+def analyze(path: Path, max_examples: int = 5, delimiter: str | None = None) -> tuple[list[Finding], dict]:
     """Run every check; return (findings, summary)."""
     findings, summary = [], {}
     text, pre = read_text(path)
     findings.extend(pre)
 
-    delim = sniff_delimiter(text)
+    delim = delimiter or sniff_delimiter(text)
     if delim != ",":
         findings.append(Finding(
             "delimiter", "info", f"Delimiter detected: {delim!r}",
             "Not a comma - make sure your import tool agrees."))
 
-    all_rows = list(csv.reader(text.splitlines(), delimiter=delim))
+    # Use io.StringIO to preserve multiline cells instead of splitlines()
+    all_rows = list(csv.reader(io.StringIO(text), delimiter=delim))
     blank = sum(1 for r in all_rows if not any(c.strip() for c in r))
     if blank:
         findings.append(Finding(
@@ -159,7 +161,8 @@ def analyze(path: Path, max_examples: int = 5) -> tuple[list[Finding], dict]:
             "duplicates before aggregating.", ex))
 
     # -- per-column scans --------------------------------------------
-    colname = lambda i: header[i].strip() or f"(column {i + 1})"  # noqa: E731
+    # Safe bounds-checked colname to guard against rows with extra columns
+    colname = lambda i: (header[i].strip() if i < len(header) else f"(column {i + 1})") or f"(column {i + 1})"
     ws_counter: Counter = Counter()
     ws_examples: list[str] = []
     empty_counter: Counter = Counter()
@@ -231,6 +234,52 @@ def analyze(path: Path, max_examples: int = 5) -> tuple[list[Finding], dict]:
     return findings, summary
 
 
+def fix_csv(path: Path, out_path: Path, delimiter: str | None = None) -> dict:
+    """Auto-repair CSV: trim whitespace, strip blank lines, deduplicate, pad ragged rows."""
+    text, _ = read_text(path)
+    delim = delimiter or sniff_delimiter(text)
+    all_rows = list(csv.reader(io.StringIO(text), delimiter=delim))
+    rows = [r for r in all_rows if any(c.strip() for c in r)]
+    if not rows:
+        raise ValueError("Cannot fix an empty CSV file")
+
+    header = [h.strip() for h in rows[0]]
+    ncols = len(header)
+
+    seen = set()
+    clean_data = []
+    removed_dups = 0
+    adjusted_rows = 0
+
+    for r in rows[1:]:
+        clean_row = [c.strip() for c in r]
+        if len(clean_row) < ncols:
+            clean_row = clean_row + [""] * (ncols - len(clean_row))
+            adjusted_rows += 1
+        elif len(clean_row) > ncols:
+            clean_row = clean_row[:ncols]
+            adjusted_rows += 1
+        row_tuple = tuple(clean_row)
+        if row_tuple in seen:
+            removed_dups += 1
+            continue
+        seen.add(row_tuple)
+        clean_data.append(clean_row)
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.writer(fh, delimiter=delim)
+        writer.writerow(header)
+        writer.writerows(clean_data)
+
+    return {
+        "output_file": str(out_path),
+        "rows": len(clean_data),
+        "removed_duplicates": removed_dups,
+        "adjusted_ragged_rows": adjusted_rows,
+    }
+
+
 def render(findings: list[Finding], summary: dict) -> str:
     lines = [f"csv-doctor report: {summary.get('file', '?')} "
              f"({summary.get('rows', 0)} data rows, "
@@ -268,29 +317,62 @@ def main(argv: list[str] | None = None) -> int:
                     help="print a machine-readable report instead")
     ap.add_argument("--max-examples", type=int, default=5,
                     help="examples to show per finding (default: 5)")
+    ap.add_argument("-d", "--delimiter", default=None,
+                    help="explicit delimiter (e.g. ',', ';', '\\t')")
+    ap.add_argument("--error-only", action="store_true",
+                    help="only return exit code 1 on errors, ignore warnings")
+    ap.add_argument("-q", "--quiet", action="store_true",
+                    help="suppress console output (exit code only)")
+    ap.add_argument("--fix", nargs="?", const="", default=None,
+                    metavar="OUT_FILE",
+                    help="auto-clean whitespace, blank lines, and duplicates into a fixed CSV")
     args = ap.parse_args(argv)
 
     path = Path(args.file)
     if not path.is_file():
-        print(f"csv-doctor: cannot read {args.file}", file=sys.stderr)
+        if not args.quiet:
+            print(f"csv-doctor: cannot read {args.file}", file=sys.stderr)
         return 2
+
+    # Auto-fix mode
+    if args.fix is not None:
+        out_path = Path(args.fix) if args.fix else path.with_name(f"{path.stem}_clean.csv")
+        try:
+            res = fix_csv(path, out_path, delimiter=args.delimiter)
+            if not args.quiet:
+                if args.json:
+                    print(json.dumps(res, indent=2))
+                else:
+                    print(f"csv-doctor: fixed CSV written to {out_path} "
+                          f"({res['rows']} rows, removed {res['removed_duplicates']} duplicate(s), "
+                          f"adjusted {res['adjusted_ragged_rows']} ragged row(s))")
+            return 0
+        except Exception as exc:
+            if not args.quiet:
+                print(f"csv-doctor: fix failed: {exc}", file=sys.stderr)
+            return 2
+
     try:
-        findings, summary = analyze(path, args.max_examples)
+        findings, summary = analyze(path, args.max_examples, delimiter=args.delimiter)
     except (OSError, csv.Error, UnicodeError) as exc:
-        print(f"csv-doctor: failed to analyse {args.file}: {exc}",
-              file=sys.stderr)
+        if not args.quiet:
+            print(f"csv-doctor: failed to analyse {args.file}: {exc}",
+                  file=sys.stderr)
         return 2
 
-    if args.json:
-        real = [f for f in findings if f.severity != "info"]
-        print(json.dumps({
-            "summary": summary,
-            "problems": len(real),
-            "findings": [f.to_dict() for f in findings],
-        }, indent=2))
-    else:
-        print(render(findings, summary))
+    if not args.quiet:
+        if args.json:
+            real = [f for f in findings if f.severity != "info"]
+            print(json.dumps({
+                "summary": summary,
+                "problems": len(real),
+                "findings": [f.to_dict() for f in findings],
+            }, indent=2))
+        else:
+            print(render(findings, summary))
 
+    if args.error_only:
+        return 1 if any(f.severity == "error" for f in findings) else 0
     return 1 if any(f.severity in ("error", "warn") for f in findings) else 0
 
 

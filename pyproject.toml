@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "csv-doctor"
+version = "0.2.0"
+description = "Check a CSV for common data problems before you import it."
+readme = "README.md"
+authors = [
+    { name = "Nitesh Beniwal" }
+]
+license = { text = "MIT" }
+requires-python = ">=3.9"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Utilities",
+]
+
+[project.urls]
+Homepage = "https://github.com/NiteshBen/csv-doctor"
+
+[project.scripts]
+csv-doctor = "csv_doctor:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+]

@@ -28,11 +28,11 @@ returns a non-zero exit code so you can gate a pipeline on it.
 
 Python 3.9+ standard library only — nothing to install.
 
-```
+```bash
 py csv_doctor.py examples/dirty_sales.csv
 ```
 
-```
+```text
 csv-doctor report: dirty_sales.csv (6 data rows, 5 columns)
 
 WARN   blank-lines       1 blank line(s)
@@ -60,20 +60,35 @@ INFO   constant-column   Column 'status' has a single value: 'shipped'
 verdict: 7 problem(s) (1 error, 6 warning), 1 note(s)
 ```
 
-### Machine-readable output and exit codes
+### Auto-Fix Mode (`--fix`)
 
+Automatically strip stray whitespace, remove blank lines, deduplicate records, and normalize ragged rows into a clean UTF-8 CSV:
+
+```bash
+# Writes to dirty_sales_clean.csv automatically
+py csv_doctor.py examples/dirty_sales.csv --fix
+
+# Or specify custom destination
+py csv_doctor.py examples/dirty_sales.csv --fix cleaned_output.csv
 ```
+
+### Machine-readable output, CI flags, and exit codes
+
+```bash
 py csv_doctor.py data.csv --json          # JSON report for scripts/CI
 py csv_doctor.py data.csv --max-examples 20
+py csv_doctor.py data.csv -d ";"           # Explicit delimiter override
+py csv_doctor.py data.csv --error-only     # Exit 1 only on error (allow warnings)
+py csv_doctor.py data.csv -q               # Quiet mode: exit code only
 ```
 
 | Exit code | Meaning |
 |---|---|
-| 0 | clean (informational notes allowed) |
+| 0 | clean (or warnings permitted with `--error-only`) |
 | 1 | at least one error or warning found |
-| 2 | file could not be read |
+| 2 | file could not be read / fix failed |
 
-Use it as a gate, e.g. `py csv_doctor.py upload.csv || echo "fix the file first"`.
+Use it as a gate, e.g. `py csv_doctor.py upload.csv -q || echo "fix the file first"`.
 
 ## Limitations
 
@@ -82,11 +97,11 @@ Use it as a gate, e.g. `py csv_doctor.py upload.csv || echo "fix the file first"
 
 ## Testing
 
-```
+```bash
 py -m pytest
 ```
 
-10 tests, one per check plus the CLI exit codes and JSON shape.
+15 tests, covering each diagnostic check, ragged row extra-column bounds safety, multiline quoted cell newline preservation, auto-fix mode, custom delimiters, quiet mode, error-only mode, and JSON reports.
 
 ## License
 
